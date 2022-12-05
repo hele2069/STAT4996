@@ -1,0 +1,573 @@
+---
+title: "\\vspace{2.5in} Technical Deliverable"
+author:
+  - Team 8
+  -
+  - Zhiang Li
+  -
+  - Yiwei He
+  -
+  - Rende Wu
+output: pdf_document
+header-includes: 
+  - \renewcommand{\and}{\\}
+---
+
+```{r setup, include=FALSE}
+library(ROCR)
+library(MASS)
+library(klaR)
+library(ICS)
+library(tree)
+library(car)
+```
+
+\newpage
+
+# Introduction  
+Methane is an important energy source for sea-floor life, and we are interested in understanding how the micro-organisms convert it into other compounds. One of the mechanisms for this conversion is called anaerobic oxidation of methane (AOM). Measurements and equipment for measuring AOM are relatively expensive, and therefore our goal is to predict AOM using statistics. 
+
+This data set is collected from soil samples from the floor of the Gulf of Mexico. There are a total of 275 observations.
+
+# Variables of Interest  
+- Site Type (shelf, abyssal, or oil seep) 
+- Depth (various groups indicating the depth where the samples were taken)
+- CH4 level
+- NO3 level
+- NO2 level
+- NH4 level 
+- Sulfide level
+- SO4 level 
+- AOM level 
+
+# Proposed Approach  
+After exploring our data set, we found extreme variations among the variables, including substantial outliers. There are a few observations where AOM level exceeds thousands, where the majority has a value of less than 100. Therefore, we hope to first explore the existence of AOM by converting AOM level into 'Yes' and 'No' indicating its presence. Then, using the best model we find, we will subset our data set to those being predicted as containing AOM existence. Then, we hope to fit another model that best predicts the actual level of AOM. In other words, we first try and fit a classification model, then use it to subset our data and fit it into a regression model. 
+
+We would also want to note that our main goal is prediction, not interpretation. Therefore, the relationships between predictors and the response variable become less important. Our two most important metrics are: prediction accuracy for classification, and prediction MSE for regression. 
+
+# Data Cleaning  
+```{r}
+## Load Data
+raw <- read.csv("AOM_Data.csv") # raw version
+temp <- read.csv("Cleaned_AOM_Data.csv") # cleaned version
+
+## get cleaned version of Sed.Depth from cleaned data set
+raw$Sed.Depth <- temp$Sed.Depth
+## remove rows with NA values and columns that are not needed
+data <- na.omit(raw)[,c(-1,-2,-4,-13,-14)]
+## change charactors to factors 
+data$Site.Type <- factor(data$Site.Type)
+## manipulate Sed.Depth by converting it into categorical variables
+data$Sed.Depth[which(data$Sed.Depth == 'Oily Layer')] <- 0
+data$Sed.Depth <- as.numeric(data$Sed.Depth)
+## either shallow or deep
+data$Sed.Depth <- ifelse(data$Sed.Depth < 15,'shallow','deep')
+data$Sed.Depth <- as.factor(data$Sed.Depth)
+# adjust and standardize the units (conversion from micromoles to millimoles)
+data$Sulfide <- data$Sulfide/1000
+data$SO4 <- data$SO4/1000
+```
+68 out of 275 observations contain NA values. We decide to remove all of the rows that have one or more NA values since the model trained with the removal of all missing values creates a robust model and our data size is still sufficiently large after the removal so we do not need to worry about loss of much information.
+
+\newpage
+
+# Analysis - Classification  
+We will explore whether there exists certain amount of AOM in sea water. 
+
+## Data Cleaning  
+```{r}
+## create a new data set for logistic regression 
+logi_data <- data
+## convert AOM into a binary/categorical factor
+logi_data$AOM <- ifelse(logi_data$AOM==0,'No','Yes')
+logi_data$AOM <- factor(logi_data$AOM)
+##evenly split data into train and test sets 
+set.seed(111)
+sample.data<-sample.int(nrow(logi_data), floor(.50*nrow(logi_data)),replace = F)
+train<-logi_data[sample.data, ]
+test<-logi_data[-sample.data, ]
+```
+
+## EDA  
+### Quantitative  
+```{r}
+## correlations
+cor(logi_data[,c(-1,-2,-3)])
+pairs(logi_data[,c(-1,-2,-3)])
+```
+There seems to be no apparent correlations observed and many potential outliers.
+
+### Qualitative  
+```{r}
+par(mfrow=c(2,3))
+boxplot(CH4~AOM,logi_data)
+boxplot(Sulfide~AOM,logi_data)
+boxplot(SO4~AOM,logi_data)
+boxplot(NO3~AOM,logi_data)
+boxplot(NO2~AOM,logi_data)
+boxplot(NH4~AOM,logi_data)
+```
+There seems to be many outliers between the response variable and 6 predictors of choice. The middle 50 percent distribution seems to be highly similar. The amount of outliers might impact our future model-building. 
+
+## Logistic Regression  
+### Full Model  
+#### Model Summary  
+```{r}
+result_train<-glm(AOM~., family=binomial, data=train)
+summary(result_train)
+```
+Under a significance level of 0.05, only two variables (depth, CH4) are significant. We need to consider the possibility of having a reduced model or even an intercept-only model.  
+
+#### Likelihood Ratio Test  
+```{r}
+TS1<-result_train$null - result_train$dev
+1-pchisq(TS1,2)
+```
+We conduct a likelihood ratio test (LRT) to compare our model with an intercept-only model. With a p-value smaller than 0.05, we reject the null and retain the full model.
+
+#### ROC & AUC  
+```{r}
+##predicted probabilities for test data based on training data
+preds<-predict(result_train,newdata=test, type="response") 
+##produce the numbers associated with classification table
+rates<-ROCR::prediction(preds, test$AOM) 
+##store the true positive and false postive rates
+roc_result<-ROCR::performance(rates,measure="tpr", x.measure="fpr")
+##plot ROC curve and overlay the diagonal line for random guessing
+plot(roc_result, main="ROC Curve")
+lines(x = c(0,1), y = c(0,1), col="red")
+
+auc<-ROCR::performance(rates, measure = "auc")
+paste('AUC is', auc@y.values)
+```
+An ROC curve that is above the diagonal indicates the logistic regression does better than random guessing; and ROC curve that is below this diagonal does worse than random guessing. As observed, the curve is mostly above the diagonal, which means our model does better than random guessing. 
+
+Another measure is the area under the curve (AUC). A classifier that randomly guesses will have an AUC of 0.5, and we would want our AUC to be closer to 1. With an AUC value of around 0.66, our model seems to just perform a bit well than random guessing model. 
+
+#### Accuracy Rate  
+```{r}
+confusion.mat<-table(test$AOM,preds > 0.5)
+confusion.mat
+
+acc.full <- (confusion.mat[1,1]+confusion.mat[2,2])/nrow(test)
+paste('Accuracy is',acc.full)
+```
+A model accuracy of about 70% is pretty satisfactory.
+
+### Stepwise Selection  
+#### Backward Selection  
+We will perform a backward selection since the number of samples (n) is larger than the number of variables p in our case.
+```{r}
+stepAIC(result_train,direction = 'backward')
+```
+Depth, site type, CH4 level, Sulfide level, and NH4 level are retained at last. We will further evaluate the reduced model with the predictors as mentioned.
+
+### Reduced Model  
+#### Model Summary  
+```{r}
+better_train<-glm(AOM~Sed.Depth+Site.Type+CH4+Sulfide+NH4,
+                  family=binomial,data=train)
+summary(better_train)
+```
+Under a significance level of 0.05, two variables (depth and CH4 level) are significant.
+
+#### ROC & AUC  
+```{r}
+##predicted probabilities for test data based on training data
+better_preds<-predict(better_train,newdata=test, type="response") 
+##produce the numbers associated with classification table
+better_rates<-ROCR::prediction(better_preds, test$AOM) 
+##store the true positive and false postive rates
+better_roc_result<-ROCR::performance(better_rates,measure="tpr", x.measure="fpr")
+##plot ROC curve and overlay the diagonal line for random guessing
+plot(better_roc_result, main="ROC Curve")
+lines(x = c(0,1), y = c(0,1), col="red")
+
+auc<-ROCR::performance(better_rates, measure = "auc")
+paste('AUC is', auc@y.values)
+```
+In comparison to the raw model, ROC seems to be improved, but AUC does not change much. 
+
+#### Accuracy Rate  
+```{r}
+confusion.mat<-table(test$AOM,better_preds > 0.5)
+confusion.mat
+
+acc.reduced <- (confusion.mat[1,1]+confusion.mat[2,2])/nrow(test)
+paste('Accuracy is',acc.reduced)
+```
+The accuracy drops from 70% to 65%, which is concerning. 
+
+### Model Comparison (Full vs. Reduced)  
+```{r}
+TS2<-better_train$dev - result_train$dev
+1-pchisq(TS2,2)
+```
+With a p-value larger than 0.05, we fail to reject the null hypothesis and move forward with the reduced model. However, the accuracy actually drops by 5% and our goal in this project is to predict AOM level or the existence of AOM. Therefore, we wonder if other model-building methods could provide stronger information. 
+
+## LDA  
+### Model Assumption 1  
+```{r}
+AOM_yes <- train[which(train$AOM=="Yes"),]
+AOM_no <- train[which(train$AOM=="No"),]
+ICS::mvnorm.kur.test(AOM_yes[,4:9])
+ICS::mvnorm.skew.test(AOM_yes[,4:9])
+ICS::mvnorm.kur.test(AOM_no[,4:9])
+ICS::mvnorm.skew.test(AOM_no[,4:9])
+```
+The assumption associated with discriminant analysis is that the predictors follow a multivariate normal distribution for each class of the response variable. Under the MVN tests, we reject the null hypothesis, so we have evidence the assumption for discriminant analysis is not met, but since we only care about prediction not inference, we can keep going.
+
+### Model Assumption 2  
+```{r}
+pairs(train[,4:9], col = c(1,2)[train$AOM], lower.panel=NULL)
+```
+No obvious pattern is observed, but we still continue with model building to see if LDA performs better than logistic regression in prediction. 
+
+### Model Summary  
+```{r}
+lda.data <- MASS::lda(AOM~CH4+Sulfide+SO4+NO3+NO2+NH4, data=train)
+lda.data
+```
+Sulfide level contributes most information to AOM existence, while others have minimal impact, as indicated by the LD1 values. 
+
+### Accuracy Rate  
+```{r}
+##predictions on test data.
+lda.test <- predict(lda.data,test)
+##confusion matrix. By default, threshold is 0.5 
+table(test$AOM,lda.test$class)
+##accuracy on test data
+acc.lda <- mean(test$AOM == lda.test$class)
+acc.lda
+```
+An accuracy of 0.6730769 is a bit better than our reduced logistic regression model, but worse than our full logistic regression model.
+
+### ROC & AUC  
+```{r}
+lda.preds<-lda.test$posterior[,2]
+lda.rates<-ROCR::prediction(lda.preds, test$AOM)
+lda.roc_result<-ROCR::performance(lda.rates,measure="tpr", x.measure="fpr")
+plot(lda.roc_result, main="ROC Curve for Gender of Adelie Penguins")
+lines(x = c(0,1), y = c(0,1), col="red")
+
+auc<-ROCR::performance(lda.rates, measure = "auc")
+paste('AUC is', auc@y.values)
+```
+ROC seems to follow the diagonal, while the AUC is close to 0.5, both of which are worse than what we got in logistic regression and indicates that our LDA model performs similarly to random guessing. 
+
+### Model Comparison (LDA vs. Logistic)   
+Based on our outputs in LDA and logistic regression, our full logistic regression model is the best in predicting AOM existence. We will continue to try other models since the accuracy level is still not high enough. 
+
+## Classification Tree  
+### Recursive Binary Splitting  
+#### Model Summary  
+```{r}
+tree.class.train<-tree::tree(AOM~., data=train)
+summary(tree.class.train)
+```
+There are a total of 14 terminal nodes and five chosen predictors, which is acceptable.
+
+#### Tree Plot  
+```{r}
+plot(tree.class.train)
+text(tree.class.train, cex=0.6)
+```
+
+#### Accuracy Rate  
+```{r}
+##prediction based on pruned tree for test data
+tree.pred.prune<-predict(tree.class.train, newdata=test, type="class") 
+##confusion matrix for test data
+table(test$AOM, tree.pred.prune)
+acc.tree <- mean(tree.pred.prune==test$AOM)
+acc.tree
+```
+The accuracy rate (61%) is still similar to what we got in logistic regression. We can consider pruning our tree. 
+
+### Pruning  
+```{r}
+set.seed(4996)
+cv.class <- tree::cv.tree(tree.class.train, K=10, FUN=prune.misclass)
+trees.num.class<-cv.class$size[which.min(cv.class$dev)]
+trees.num.class
+# prune.class<-tree::prune.misclass(tree.class.train, best=trees.num.class)
+# plot(prune.class)
+# text(prune.class, cex=0.75, pretty=0)
+```
+Pruning does not reduce our number of predictors or terminal nodes. However, we can still improve our prediction accuracy by optimizing our tree model. 
+
+### Random Forest  
+```{r}
+set.seed(4996)
+size.class <- floor(sqrt(ncol(train)))
+rf.class <- randomForest::randomForest(AOM~., data=train, 
+                                       mtry=size.class, importance=TRUE)
+randomForest::importance(rf.class)
+randomForest::varImpPlot(rf.class)
+```
+NH4 and CH4 level are the most important predictors in our random forest model.
+
+#### Accuracy Rate  
+```{r}
+# prediction
+pred.rf.class <- predict(rf.class, newdata=test, type='class')
+# confusion matrix
+matrix.rf <- table(test$AOM, pred.rf.class)
+acc.rf <- mean(pred.rf.class==test$AOM)
+acc.rf
+```
+An accuracy level of around 0.72 is better than all models tried previously.
+
+### Model Comparison (Tree vs. Logistic)  
+Random forest performs slightly better in predicting the existence of AOM, in comparison to recursive binary splitting tree. 
+
+## Conclusion  
+```{r}
+class.matrix <- data.frame(logistic.full=acc.full,
+                           logistic.reduced=acc.reduced,
+                           lda=acc.lda,
+                           tree=acc.tree,
+                           random.forest=acc.rf)
+class.matrix
+```
+As shown above, random forest model is the best model to predict AOM existence, with a prediction accuracy of 72%. We now end our classification investigation and will continue with predicting the actual AOM level with data points selected by our random forest model. 
+
+\newpage
+
+# Analysis - Regression  
+Rather than using the entire data set, we apply random forest model to predict AOM existence, and subset those with predicted existence. We then exclude those that are falsely predicted by the random forest model. We also exclude AOM with zero values since it basically implies that there is no AOM existence. 
+
+However, there are some outliers with extremely high AOM values (most of them are hundreds, while certain ones are larger than 5000). This could impact our model performance so even though our random forest model might keep them, we decide to filter our data set again to remove these outliers. We will refer to the 1.5 IQR rule for checking outliers. 
+
+## Data Cleaning  
+```{r}
+line_data <- data[predict(rf.class,newdata=data,type='class')=='Yes',]
+line_data <- line_data[line_data$AOM>0,]
+# remove outliers 
+quarter25 <- quantile(line_data$AOM,0.25)
+quarter75 <- quantile(line_data$AOM,0.75)
+iqr <- quarter75 - quarter25
+line_data <- line_data[line_data$AOM<=quarter75+1.5*iqr & 
+                       line_data$AOM>=quarter25-1.5*iqr,]
+
+# training & testing sets split 
+set.seed(4996)
+sample_line <- sample.int(nrow(line_data),floor(.50*nrow(line_data)),replace=F) 
+train_line <- line_data[sample_line, ]
+test_line <- line_data[-sample_line, ]
+test_line <- test_line[-c(6,7), ]
+```
+
+## EDA  
+### Qualitative  
+```{r}
+par(mfrow=c(1,2))
+boxplot(AOM~Sed.Depth,line_data)
+boxplot(AOM~Site.Type,line_data)
+```
+With outliers removed, higher AOM levels seem to appear in deeper sea levels. AOM level also varies drastically across the three site types. 
+
+### Qualitative  
+```{r}
+par(mfrow=c(3,3))
+plot(AOM~CH4,line_data)
+plot(AOM~Sulfide,line_data)
+plot(AOM~SO4,line_data)
+plot(AOM~NO3,line_data)
+plot(AOM~NO2,line_data)
+plot(AOM~NH4,line_data)
+```
+There does not seem to be apparent associations between AOM level and any of the predictors. 
+
+## Linear Regression  
+### Model Assumption  
+```{r}
+lm_result<-lm(AOM~., data=train_line)
+par(mfrow=c(2,2))
+plot(lm_result)
+```
+Our data does not pass the linear regression model assumptions. The residuals follow along the horizontal line with minor curvature. The normality assumption is good, following the 45 degree line. However, there seems to be an apparent curvature in the scale-location plot and seems to be a lot of outliers as shown in the residual-leverage plot. We can consider transforming our data to better meet the model assumptions. 
+
+### Evalue Need for Transformation  
+```{r}
+par(mfrow=c(1,1))
+MASS::boxcox(lm_result)
+```
+As shown in the boxcox plot, with a lambda of around 0, we would need a log transformation.  
+
+### Log-Linear Regression Model  
+#### Model Assumption  
+```{r}
+log_result<-lm(log(AOM)~., data=train_line)
+par(mfrow=c(2,2))
+plot(log_result)
+```
+After taking a log transformation, our model better meets the regression assumptions.
+
+#### Model Summary  
+```{r}
+summary(log_result)
+```
+With a p-value slightly larger than 0.05, we fail to reject the null. This model is not sufficient in predicting AOM level and we consider reducing the model to better fit the prediction. 
+
+### Stepwise Selection  
+```{r}
+stepAIC(log_result,direction = 'backward')
+```
+Site type, CH4, Sulfide, SO4, NO2, and NH4 are retained after stepwise selection. We will further evaluate the reduced model with the predictors as mentioned.
+
+### Evaluate Reduced Model  
+#### Model Summary  
+```{r}
+better_log_result<-lm(log(AOM)~Site.Type+CH4+Sulfide+SO4+NO2+NH4,data=train_line)
+summary(better_log_result)
+```
+With a p-value much less than 0.05, we reject the null and our model can sufficiently provide information about AOM level. However, there are only two significant variables (CH4 and NO2 level), so we further compare between the model selected by stepwise and the reduced model with the two significant variables as predictors. 
+
+#### Model Comparison (Stepwie vs. Stepwise-Reduced)  
+```{r}
+reduced_log_result <- lm(log(AOM)~CH4+NO2,data=train_line)
+anova(reduced_log_result,better_log_result)
+```
+With a p-value less than 0.05, we reject the null and move forward with the model suggested by backwards selection. 
+
+#### VIF & Multicolinearity Check  
+```{r}
+VIF_check <- lm(AOM~Site.Type+CH4+Sulfide+SO4+NO2+CH4,data=train_line)
+car::vif(VIF_check)
+#create horizontal bar chart to display each VIF value
+barplot(vif(VIF_check), main = "VIF Values", horiz = TRUE, col = "steelblue")
+
+#add vertical line at 5
+#greater than 5 indicating prescence of multicolinearity 
+abline(v = 5, lwd = 3, lty = 2)
+```
+VIF score is good for all of the quantitative factors indicating there is no multicolinearity.
+
+#### Model Graphical Interpretation  
+```{r}
+avPlots(better_log_result)
+```
+It seems like linear regression is not the best option since the line does not fit all the points well. Many points just vertically spread out at the sides of the line.
+
+#### Test MSE  
+```{r}
+pred<-predict.lm(better_log_result,test_line)
+mse.reg<-mean((log(test_line$AOM)-pred)^2)
+mse.reg
+```
+A test MSE of around 9.8 is pretty low, but we will continue with further optimization, such as Ridge regression.
+
+### Ridge Regression  
+```{r}
+x <- model.matrix(AOM~.,data=line_data)[,-1]
+y <- line_data$AOM
+##split data
+set.seed(4996)
+sample.data.ridge<-sample.int(nrow(line_data), floor(.50*nrow(line_data)), replace = F)
+x.train<-x[sample.data.ridge,]
+x.test<-x[-sample.data.ridge,]
+y.train<-log(y[sample.data.ridge])
+y.test<-log(y[-sample.data.ridge])
+##use CV to find optimal lambda based on training set
+set.seed(4996)
+cv.out.ridge<-glmnet::cv.glmnet(x.train,y.train,alpha=0,nfolds=5,thresh = 1e-23)
+bestlam.ridge<-cv.out.ridge$lambda.min
+```
+
+#### Test MSE  
+```{r}
+##fit ridge regression using training data and bestlam
+ridge.mod<-glmnet::glmnet(x.train,y.train,alpha=0,lambda=bestlam.ridge,nfolds=5,thresh = 1e-23)
+##Test MSE with best lambda
+ridge.pred<-predict(ridge.mod,newx=x.test)
+mse.ridge <- mean((ridge.pred-y.test)^2)
+mse.ridge
+```
+The test MSE drastically reduces after fitting ridge regression, dropping from 8 to 5. Since we are focusing on prediction, we are not worried about interpreting the coefficients. 
+
+### Lasso Regression  
+#### Test MSE  
+```{r}
+##use CV to find optimal lambda based on training set
+set.seed(4996)
+cv.out.lasso<-glmnet::cv.glmnet(x.train,y.train,alpha=1,nfolds=5,thresh = 1e-23)
+bestlam.lasso<-cv.out.lasso$lambda.min
+##fit lasso regression using training data and bestlam
+lasso.mod<-glmnet::glmnet(x.train,y.train,alpha=1,lambda=bestlam.lasso,nfolds=5,thresh = 1e-23)
+##Test MSE with best lambda
+lasso.pred<-predict(lasso.mod,newx=x.test)
+mse.lasso <- mean((lasso.pred-y.test)^2)
+mse.lasso
+```
+Lasso regression's test MSE is slightly higher than Ridge's, so we move forward using Ridge regression model. 
+
+## Regression Tree  
+### Recursive Binary Splitting  
+#### Model Summary  
+```{r}
+tree.reg <- tree(log(AOM)~., data=train_line)
+summary(tree.reg)
+```
+NO3, NH4, NO2 are retained in our tree model, with 4 terminal nodes. 
+
+#### Graphical Summary  
+```{r}
+plot(tree.reg)
+text(tree.reg, cex=0.6)
+```
+NO3 seems to be the most important variable in our recursive binary tree, then NH4 and NO2. 
+
+#### Test MSE  
+```{r}
+pred.tree.reg <- predict(tree.reg, newdata=test_line)
+mse.tree.reg <- mean((log(test_line$AOM)-pred.tree.reg)^2)
+mse.tree.reg
+```
+The test MSE is around 7, which does not perform better than Ridge regression. However, we will try out some optimization methods. 
+
+### Pruning  
+```{r}
+set.seed(4996)
+cv.class.reg<-tree::cv.tree(tree.reg, K=10)
+trees.num.class.reg<-cv.class.reg$size[which.min(cv.class.reg$dev)]
+trees.num.class.reg
+```
+It seems like we are pruning the tree to retain only one terminal node, which is not desirable so we would not continue with that. 
+
+### Random Forest  
+```{r}
+set.seed(4996)
+size <- floor((ncol(train_line)-1)/3)
+rf.reg <- randomForest::randomForest(log(AOM)~., data=train_line,mtry=size, importance=TRUE)
+randomForest::importance(rf.reg)
+randomForest::varImpPlot(rf.reg)
+```
+The random forest model selects NO2, NO3, and SO4 as the important predictors, which is slightly different from what we observed in the recursive binary tree model. 
+
+#### Test MSE  
+```{r}
+pred.rf.reg <- predict(rf.reg, newdata=test_line)
+mse.rf.reg <- mean((log(test_line$AOM)-pred.rf.reg)^2)
+mse.rf.reg
+```
+The MSE drops drastically, close to Ridge regression's performance. 
+
+## Conclusion  
+```{r}
+reg.matrix <- data.frame(linear=mse.reg,
+                         ridge=mse.ridge,
+                         lasso=mse.lasso,
+                         tree=mse.tree.reg,
+                         random.forest=mse.rf.reg)
+reg.matrix
+```
+Ridge and random forest have the lowest MSE, which means they both are the most effective in predicting AOM level. However, since they each select different sets of variables in the model, we do not know for sure which can be more effective. This is partially due to the massive variation contained in our data set. 
+
+# Final Remarks  
+To recap, we first explored various classification models and found random forest to be the best in predicting AOM presence. Then, we use that model to predict on our data and find the corresponding observations. Using these data points, we fit regression models and eventually find ridge regression and random forest regression model to be the best at predicting AOM level. 
+
+There are challenges involved, such as cleaning the data due to various levels contained in certain variables and figuring how to deal with the outliers. Also, under complex real-life data sets like the one we use, comparing between vast statistical models becomes increasingly crucial. 
+
+
+
