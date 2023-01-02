@@ -1,5 +1,5 @@
 ## Overview 
-Code files in course STAT 4996: Capstone, focusing on predicting AOM Level in Seawater
+Code files in course STAT 4996: Capstone, focusing on **predicting AOM Level in Seawater**.
 
 ## Introduction
 Methane is an important energy source for sea-floor life, and we are interested in understanding how the micro-organisms convert it into other compounds. One of the mechanisms for this conversion is called anaerobic oxidation of methane (AOM). Measurements and equipment for measuring AOM are relatively expensive, and therefore our goal is to predict AOM using statistics.
